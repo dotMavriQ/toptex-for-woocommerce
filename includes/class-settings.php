@@ -24,8 +24,15 @@ class Settings {
 	 * Default option values.
 	 */
 	const DEFAULTS = array(
+		'api_key'             => '',
+		'api_username'        => '',
+		'api_password'        => '',
+		'usage_right'         => 'b2b_b2c',
+		'language'            => 'en',
+		'import_scope'        => 'all',
+		'import_references'   => '',
+		'per_page'            => 50,
 		'markup_percent'      => 30,
-		'price_country'       => 'fr',
 		'import_images'       => 'yes',
 		'sync_frequency'      => 'daily',
 		'catalog_category_id' => 0,
@@ -63,6 +70,28 @@ class Settings {
 		add_action( 'admin_menu', array( $this, 'register_menu' ) );
 		add_action( 'admin_init', array( $this, 'register_settings' ) );
 		add_action( 'admin_post_toptex_run_sync', array( $this, 'handle_manual_sync' ) );
+		add_action( 'admin_post_toptex_test_connection', array( $this, 'handle_test_connection' ) );
+		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin_assets' ) );
+	}
+
+	/**
+	 * Enqueues the copy-to-clipboard script on the settings page only.
+	 *
+	 * @param string $hook_suffix Current admin page hook.
+	 * @return void
+	 */
+	public function enqueue_admin_assets( $hook_suffix ) {
+		if ( 'woocommerce_page_toptex-settings' !== $hook_suffix ) {
+			return;
+		}
+
+		wp_enqueue_script(
+			'toptex-admin',
+			TOP_TEX_PLUGIN_DIR_URL . 'assets/toptex-admin.js',
+			array(),
+			TOP_TEX_VERSION,
+			true
+		);
 	}
 
 	/**
@@ -98,6 +127,53 @@ class Settings {
 		);
 
 		add_settings_section(
+			'toptex_api',
+			\__( 'TopTex API connection', 'toptex-woocommerce' ),
+			'__return_false',
+			'toptex-settings'
+		);
+
+		add_settings_field(
+			'api_key',
+			\__( 'API key', 'toptex-woocommerce' ),
+			array( $this, 'field_api_key' ),
+			'toptex-settings',
+			'toptex_api'
+		);
+
+		add_settings_field(
+			'api_username',
+			\__( 'API username', 'toptex-woocommerce' ),
+			array( $this, 'field_api_username' ),
+			'toptex-settings',
+			'toptex_api'
+		);
+
+		add_settings_field(
+			'api_password',
+			\__( 'API password', 'toptex-woocommerce' ),
+			array( $this, 'field_api_password' ),
+			'toptex-settings',
+			'toptex_api'
+		);
+
+		add_settings_field(
+			'usage_right',
+			\__( 'Usage right', 'toptex-woocommerce' ),
+			array( $this, 'field_usage_right' ),
+			'toptex-settings',
+			'toptex_api'
+		);
+
+		add_settings_field(
+			'language',
+			\__( 'Language', 'toptex-woocommerce' ),
+			array( $this, 'field_language' ),
+			'toptex-settings',
+			'toptex_api'
+		);
+
+		add_settings_section(
 			'toptex_general',
 			\__( 'Catalog import', 'toptex-woocommerce' ),
 			'__return_false',
@@ -105,17 +181,33 @@ class Settings {
 		);
 
 		add_settings_field(
-			'markup_percent',
-			\__( 'Price markup (%)', 'toptex-woocommerce' ),
-			array( $this, 'field_markup' ),
+			'import_scope',
+			\__( 'Import scope', 'toptex-woocommerce' ),
+			array( $this, 'field_import_scope' ),
 			'toptex-settings',
 			'toptex_general'
 		);
 
 		add_settings_field(
-			'price_country',
-			\__( 'Price list', 'toptex-woocommerce' ),
-			array( $this, 'field_price_country' ),
+			'import_references',
+			\__( 'Catalog references', 'toptex-woocommerce' ),
+			array( $this, 'field_import_references' ),
+			'toptex-settings',
+			'toptex_general'
+		);
+
+		add_settings_field(
+			'per_page',
+			\__( 'First N products', 'toptex-woocommerce' ),
+			array( $this, 'field_per_page' ),
+			'toptex-settings',
+			'toptex_general'
+		);
+
+		add_settings_field(
+			'markup_percent',
+			\__( 'Price markup (%)', 'toptex-woocommerce' ),
+			array( $this, 'field_markup' ),
 			'toptex-settings',
 			'toptex_general'
 		);
@@ -183,12 +275,45 @@ class Settings {
 		$input = is_array( $input ) ? $input : array();
 		$out   = self::DEFAULTS;
 
-		if ( isset( $input['markup_percent'] ) ) {
-			$out['markup_percent'] = min( 1000, max( 0, (float) $input['markup_percent'] ) );
+		if ( isset( $input['api_key'] ) ) {
+			$out['api_key'] = sanitize_text_field( $input['api_key'] );
 		}
 
-		if ( isset( $input['price_country'] ) && in_array( $input['price_country'], array( 'fr', 'it' ), true ) ) {
-			$out['price_country'] = sanitize_key( $input['price_country'] );
+		if ( isset( $input['api_username'] ) ) {
+			$out['api_username'] = sanitize_text_field( $input['api_username'] );
+		}
+
+		if ( isset( $input['api_password'] ) && ! empty( $input['api_password'] ) ) {
+			// Preserve the password as-is; don't sanitize/re-encode credentials.
+			$out['api_password'] = (string) $input['api_password'];
+		} else {
+			// Keep the existing password if the field is left blank.
+			$existing            = $this->get_options();
+			$out['api_password'] = isset( $existing['api_password'] ) ? $existing['api_password'] : '';
+		}
+
+		if ( isset( $input['usage_right'] ) && in_array( $input['usage_right'], array( 'b2b_uniquement', 'b2c_uniquement', 'b2b_b2c' ), true ) ) {
+			$out['usage_right'] = sanitize_key( $input['usage_right'] );
+		}
+
+		if ( isset( $input['language'] ) && in_array( $input['language'], array( 'de', 'en', 'es', 'fr', 'it', 'nl', 'pt' ), true ) ) {
+			$out['language'] = sanitize_key( $input['language'] );
+		}
+
+		if ( isset( $input['import_scope'] ) && in_array( $input['import_scope'], array( 'all', 'selection', 'per_page' ), true ) ) {
+			$out['import_scope'] = sanitize_key( $input['import_scope'] );
+		}
+
+		if ( isset( $input['import_references'] ) ) {
+			$out['import_references'] = $this->sanitize_references( $input['import_references'] );
+		}
+
+		if ( isset( $input['per_page'] ) ) {
+			$out['per_page'] = max( 1, min( 200, absint( $input['per_page'] ) ) );
+		}
+
+		if ( isset( $input['markup_percent'] ) ) {
+			$out['markup_percent'] = min( 1000, max( 0, (float) $input['markup_percent'] ) );
 		}
 
 		$out['import_images'] = ( isset( $input['import_images'] ) && 'yes' === $input['import_images'] ) ? 'yes' : 'no';
@@ -209,6 +334,161 @@ class Settings {
 	}
 
 	/**
+	 * Normalizes a whitespace/comma/newline-separated list of references.
+	 *
+	 * @param string $raw Raw list.
+	 * @return string Comma-separated, normalized references.
+	 */
+	private function sanitize_references( $raw ) {
+		$refs = preg_split( '/[\s,]+/', (string) $raw );
+		$refs = array_map(
+			function ( $ref ) {
+				return strtoupper( sanitize_text_field( $ref ) );
+			},
+			(array) $refs
+		);
+		$refs = array_values( array_filter( $refs ) );
+		$refs = array_unique( $refs );
+
+		return implode( ',', $refs );
+	}
+
+	/**
+	 * API key field.
+	 *
+	 * @return void
+	 */
+	public function field_api_key() {
+		$opts = $this->get_options();
+		?>
+		<input type="text" class="regular-text code" name="<?php echo esc_attr( self::OPTION_NAME . '[api_key]' ); ?>" value="<?php echo esc_attr( $opts['api_key'] ); ?>" />
+		<p class="description"><?php esc_html_e( 'Your TopTex partner API key (from portal.toptex.io).', 'toptex-woocommerce' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * API username field.
+	 *
+	 * @return void
+	 */
+	public function field_api_username() {
+		$opts = $this->get_options();
+		?>
+		<input type="text" class="regular-text" name="<?php echo esc_attr( self::OPTION_NAME . '[api_username]' ); ?>" value="<?php echo esc_attr( $opts['api_username'] ); ?>" autocomplete="off" />
+		<p class="description"><?php esc_html_e( 'Username used to obtain the OIDC token.', 'toptex-woocommerce' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * API password field.
+	 *
+	 * @return void
+	 */
+	public function field_api_password() {
+		$opts = $this->get_options();
+		?>
+		<input type="password" class="regular-text" name="<?php echo esc_attr( self::OPTION_NAME . '[api_password]' ); ?>" value="<?php echo esc_attr( $opts['api_password'] ); ?>" autocomplete="new-password" />
+		<p class="description"><?php esc_html_e( 'Password used to obtain the OIDC token. Leave blank to keep the existing value.', 'toptex-woocommerce' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Usage-right selector.
+	 *
+	 * @return void
+	 */
+	public function field_usage_right() {
+		$opts    = $this->get_options();
+		$choices = array(
+			'b2b_b2c'        => \__( 'B2B + B2C', 'toptex-woocommerce' ),
+			'b2b_uniquement' => \__( 'B2B only', 'toptex-woocommerce' ),
+			'b2c_uniquement' => \__( 'B2C only', 'toptex-woocommerce' ),
+		);
+		?>
+		<select name="<?php echo esc_attr( self::OPTION_NAME . '[usage_right]' ); ?>">
+			<?php foreach ( $choices as $value => $label ) : ?>
+				<option value="<?php echo esc_attr( $value ); ?>" <?php selected( $opts['usage_right'], $value ); ?>><?php echo esc_html( $label ); ?></option>
+			<?php endforeach; ?>
+		</select>
+		<p class="description"><?php esc_html_e( 'Which catalog subset your license allows you to resell.', 'toptex-woocommerce' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Language selector.
+	 *
+	 * @return void
+	 */
+	public function field_language() {
+		$opts    = $this->get_options();
+		$choices = array(
+			'en' => \__( 'English', 'toptex-woocommerce' ),
+			'fr' => \__( 'French', 'toptex-woocommerce' ),
+			'de' => \__( 'German', 'toptex-woocommerce' ),
+			'es' => \__( 'Spanish', 'toptex-woocommerce' ),
+			'it' => \__( 'Italian', 'toptex-woocommerce' ),
+			'nl' => \__( 'Dutch', 'toptex-woocommerce' ),
+			'pt' => \__( 'Portuguese', 'toptex-woocommerce' ),
+		);
+		?>
+		<select name="<?php echo esc_attr( self::OPTION_NAME . '[language]' ); ?>">
+			<?php foreach ( $choices as $value => $label ) : ?>
+				<option value="<?php echo esc_attr( $value ); ?>" <?php selected( $opts['language'], $value ); ?>><?php echo esc_html( $label ); ?></option>
+			<?php endforeach; ?>
+		</select>
+		<p class="description"><?php esc_html_e( 'Language used for imported names, descriptions and categories.', 'toptex-woocommerce' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Import scope selector.
+	 *
+	 * @return void
+	 */
+	public function field_import_scope() {
+		$opts    = $this->get_options();
+		$choices = array(
+			'all'       => \__( 'Full catalog', 'toptex-woocommerce' ),
+			'selection' => \__( 'Selected references only', 'toptex-woocommerce' ),
+			'per_page'  => \__( 'First N products', 'toptex-woocommerce' ),
+		);
+		?>
+		<select name="<?php echo esc_attr( self::OPTION_NAME . '[import_scope]' ); ?>">
+			<?php foreach ( $choices as $value => $label ) : ?>
+				<option value="<?php echo esc_attr( $value ); ?>" <?php selected( $opts['import_scope'], $value ); ?>><?php echo esc_html( $label ); ?></option>
+			<?php endforeach; ?>
+		</select>
+		<p class="description"><?php esc_html_e( 'Import everything, a selected subset of references, or only the first N products (great for testing).', 'toptex-woocommerce' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * Import references field (selection scope).
+	 *
+	 * @return void
+	 */
+	public function field_import_references() {
+		$opts = $this->get_options();
+		?>
+		<textarea class="large-text" rows="4" name="<?php echo esc_attr( self::OPTION_NAME . '[import_references]' ); ?>" placeholder="<?php esc_attr_e( 'B610, B050, IB323', 'toptex-woocommerce' ); ?>"><?php echo esc_textarea( $opts['import_references'] ); ?></textarea>
+		<p class="description"><?php esc_html_e( 'Comma-separated catalog references to import (used when scope is "Selected references only").', 'toptex-woocommerce' ); ?></p>
+		<?php
+	}
+
+	/**
+	 * "First N products" count field (per-page scope).
+	 *
+	 * @return void
+	 */
+	public function field_per_page() {
+		$opts = $this->get_options();
+		?>
+		<input type="number" step="1" min="1" max="200" name="<?php echo esc_attr( self::OPTION_NAME . '[per_page]' ); ?>" value="<?php echo esc_attr( $opts['per_page'] ); ?>" />
+		<p class="description"><?php esc_html_e( 'How many products to import when the scope is "First N products" (1–200).', 'toptex-woocommerce' ); ?></p>
+		<?php
+	}
+
+	/**
 	 * Markup percentage field.
 	 *
 	 * @return void
@@ -218,22 +498,6 @@ class Settings {
 		?>
 		<input type="number" step="0.01" min="0" max="1000" name="<?php echo esc_attr( self::OPTION_NAME . '[markup_percent]' ); ?>" value="<?php echo esc_attr( $opts['markup_percent'] ); ?>" />
 		<p class="description"><?php esc_html_e( 'Percentage added to the TopTex wholesale price to form the selling price.', 'toptex-woocommerce' ); ?></p>
-		<?php
-	}
-
-	/**
-	 * Price country selector.
-	 *
-	 * @return void
-	 */
-	public function field_price_country() {
-		$opts = $this->get_options();
-		?>
-		<select name="<?php echo esc_attr( self::OPTION_NAME . '[price_country]' ); ?>">
-			<option value="fr" <?php selected( $opts['price_country'], 'fr' ); ?>><?php esc_html_e( 'France', 'toptex-woocommerce' ); ?></option>
-			<option value="it" <?php selected( $opts['price_country'], 'it' ); ?>><?php esc_html_e( 'Italy', 'toptex-woocommerce' ); ?></option>
-		</select>
-		<p class="description"><?php esc_html_e( 'Wholesale price list used as the base price.', 'toptex-woocommerce' ); ?></p>
 		<?php
 	}
 
@@ -337,8 +601,10 @@ class Settings {
 		<div class="wrap">
 			<h1><?php esc_html_e( 'TopTex for WooCommerce', 'toptex-woocommerce' ); ?></h1>
 
+			<?php $this->render_connection_notices(); ?>
+
 			<div class="notice notice-info">
-				<p><?php esc_html_e( 'This plugin imports the TopTex wholesale garment catalog. Each TopTex style becomes a WooCommerce variable product with Color and Size attributes. Prices come from the TopTex wholesale list plus your markup.', 'toptex-woocommerce' ); ?></p>
+				<p><?php esc_html_e( 'This plugin imports the TopTex catalog via the official TopTex v3 API. Each style becomes a WooCommerce variable product with Color and Size attributes. Live dealer prices and stock are pulled from the API and a configurable markup is applied.', 'toptex-woocommerce' ); ?></p>
 			</div>
 
 			<form action="options.php" method="post">
@@ -354,11 +620,19 @@ class Settings {
 
 			<?php $this->render_last_sync_status(); ?>
 
-			<form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
+			<form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post" class="toptex-inline-form">
 				<input type="hidden" name="action" value="toptex_run_sync" />
 				<?php wp_nonce_field( 'toptex_run_sync' ); ?>
 				<?php submit_button( \__( 'Run import now', 'toptex-woocommerce' ), 'primary', 'toptex_sync_submit' ); ?>
 			</form>
+
+			<form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post" class="toptex-inline-form">
+				<input type="hidden" name="action" value="toptex_test_connection" />
+				<?php wp_nonce_field( 'toptex_test_connection' ); ?>
+				<?php submit_button( \__( 'Test connection', 'toptex-woocommerce' ), 'secondary', 'toptex_test_submit' ); ?>
+			</form>
+
+			<?php $this->render_diagnostic_report(); ?>
 		</div>
 		<?php
 	}
@@ -392,6 +666,158 @@ class Settings {
 			$summary = sprintf( \__( 'Imported: %1$d — Updated: %2$d — Errors: %3$d', 'toptex-woocommerce' ), (int) $result['imported'], (int) $result['updated'], (int) $result['errors'] );
 			echo '<p>' . esc_html( $summary ) . '</p>';
 		}
+	}
+
+	/**
+	 * Renders connection/error notices at the top of the settings page.
+	 *
+	 * @return void
+	 */
+	private function render_connection_notices() {
+		// Transient set by a just-failed manual sync.
+		$manual_error = get_transient( 'toptex_sync_error' );
+		if ( $manual_error ) {
+			echo '<div class="notice notice-error is-dismissible"><p>' . esc_html( $manual_error ) . '</p></div>';
+		}
+
+		// Transient set by a just-run connection test.
+		$test_result = get_transient( 'toptex_test_result' );
+		if ( is_array( $test_result ) && isset( $test_result['ok'] ) ) {
+			$class = $test_result['ok'] ? 'notice-success' : 'notice-error';
+			echo '<div class="notice ' . esc_attr( $class ) . ' is-dismissible"><p>' . esc_html( $test_result['message'] ) . '</p></div>';
+		}
+
+		// Fatal error from the last import run.
+		$status = get_option( 'toptex_last_sync', array() );
+		if ( ! empty( $status['diagnostic']['fatal'] ) ) {
+			$fatal = $status['diagnostic']['fatal'];
+			echo '<div class="notice notice-error"><p><strong>' . esc_html__( 'The last import failed:', 'toptex-woocommerce' ) . '</strong> ' . esc_html( isset( $fatal['message'] ) ? $fatal['message'] : '' ) . '</p><p>' . esc_html__( 'See the diagnostic report below and use "Test connection" to check your API credentials.', 'toptex-woocommerce' ) . '</p></div>';
+		}
+	}
+
+	/**
+	 * Renders the copyable diagnostic report block.
+	 *
+	 * @return void
+	 */
+	private function render_diagnostic_report() {
+		$report = $this->build_diagnostic_report();
+		?>
+		<h2><?php esc_html_e( 'Diagnostic report', 'toptex-woocommerce' ); ?></h2>
+		<p><?php esc_html_e( 'If something is not working, copy this report and send it along with your support request. It contains no secrets (your password is never included and the API key is masked).', 'toptex-woocommerce' ); ?></p>
+		<textarea id="toptex-diagnostic-report" class="large-text code" rows="16" readonly onclick="this.select();"><?php echo esc_textarea( $report ); ?></textarea>
+		<p>
+			<button type="button" class="button" data-toptex-copy="toptex-diagnostic-report"><?php esc_html_e( 'Copy report', 'toptex-woocommerce' ); ?></button>
+		</p>
+		<?php
+	}
+
+	/**
+	 * Builds a redacted diagnostic report string.
+	 *
+	 * @return string
+	 */
+	private function build_diagnostic_report() {
+		$settings = $this->get_options();
+
+		$lines   = array();
+		$lines[] = '### TopTex for WooCommerce diagnostic report';
+		$lines[] = '';
+
+		// Environment.
+		$lines[] = '- Plugin version: ' . ( defined( 'TopTexWooCommerce\\TOP_TEX_VERSION' ) ? \TopTexWooCommerce\TOP_TEX_VERSION : 'unknown' );
+		$lines[] = '- WordPress: ' . get_bloginfo( 'version' );
+		$lines[] = '- WooCommerce: ' . ( defined( 'WC_VERSION' ) ? WC_VERSION : 'unknown' );
+		$lines[] = '- PHP: ' . PHP_VERSION;
+		$lines[] = '- Site: ' . home_url();
+
+		// API config (redacted).
+		$api_key = isset( $settings['api_key'] ) ? (string) $settings['api_key'] : '';
+		$masked  = '' === $api_key ? '(not set)' : $this->mask_key( $api_key );
+		$lines[] = '- API key: ' . $masked;
+		$lines[] = '- Username: ' . ( isset( $settings['api_username'] ) && '' !== $settings['api_username'] ? $settings['api_username'] : '(not set)' );
+		$lines[] = '- Usage right: ' . ( isset( $settings['usage_right'] ) ? $settings['usage_right'] : 'b2b_b2c' );
+		$lines[] = '- Language: ' . ( isset( $settings['language'] ) ? $settings['language'] : 'en' );
+		$lines[] = '- Import scope: ' . ( isset( $settings['import_scope'] ) ? $settings['import_scope'] : 'all' );
+		$lines[] = '';
+
+		// Last sync.
+		$status = get_option( 'toptex_last_sync', array() );
+		if ( empty( $status['time'] ) ) {
+			$lines[] = '- Last import: never';
+		} else {
+			$lines[] = '- Last import: ' . gmdate( 'Y-m-d H:i:s', (int) $status['time'] ) . ' UTC';
+			if ( ! empty( $status['result'] ) ) {
+				$r       = $status['result'];
+				$lines[] = '- Imported: ' . (int) $r['imported'] . ', Updated: ' . (int) $r['updated'] . ', Errors: ' . (int) $r['errors'];
+			}
+			if ( ! empty( $status['diagnostic']['fatal'] ) ) {
+				$f       = $status['diagnostic']['fatal'];
+				$lines[] = '- Last error: [' . $f['code'] . '] ' . $f['message'] . ( ! empty( $f['http_code'] ) ? ' (HTTP ' . $f['http_code'] . ')' : '' );
+			}
+			if ( ! empty( $status['diagnostic']['failures'] ) ) {
+				$lines[] = '- Product failures:';
+				foreach ( $status['diagnostic']['failures'] as $fail ) {
+					$lines[] = '    - ' . $fail['reference'] . ': ' . $fail['message'];
+				}
+			}
+		}
+
+		return implode( "\n", $lines );
+	}
+
+	/**
+	 * Masks an API key, showing only the last four characters.
+	 *
+	 * @param string $key API key.
+	 * @return string
+	 */
+	private function mask_key( $key ) {
+		if ( strlen( $key ) <= 4 ) {
+			return '****';
+		}
+		return '****' . substr( $key, -4 );
+	}
+
+	/**
+	 * Handles the "test connection" action.
+	 *
+	 * @return void
+	 */
+	public function handle_test_connection() {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_die( esc_html__( 'You do not have permission to do this.', 'toptex-woocommerce' ) );
+		}
+
+		check_admin_referer( 'toptex_test_connection' );
+
+		$client = new Client();
+		$result = $client->test_connection();
+
+		if ( is_wp_error( $result ) ) {
+			set_transient(
+				'toptex_test_result',
+				array(
+					'ok'      => false,
+					'message' => $result->get_error_message(),
+				),
+				60
+			);
+		} else {
+			$total = isset( $result['total_count'] ) ? (int) $result['total_count'] : 0;
+			set_transient(
+				'toptex_test_result',
+				array(
+					'ok'      => true,
+					/* translators: 1: total product count. */
+					'message' => sprintf( __( 'Connected to the TopTex API. Catalog contains %1$d products.', 'toptex-woocommerce' ), $total ),
+				),
+				60
+			);
+		}
+
+		wp_safe_redirect( wp_get_referer() ? wp_get_referer() : admin_url( 'admin.php?page=toptex-settings' ) );
+		exit;
 	}
 
 	/**

@@ -4,7 +4,7 @@ Tags: woocommerce, garments, wholesale, import, apparel, toptex
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.1.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -12,42 +12,51 @@ Import the TopTex wholesale garment catalog into WooCommerce as variable product
 
 == Description ==
 
-TopTex for WooCommerce connects your WooCommerce store to the TopTex wholesale garment catalog. Each TopTex style is imported as a WooCommerce **variable product** with **Color** and **Size** attributes, so your customers can pick exactly the variant they want.
+TopTex for WooCommerce connects your WooCommerce store to the TopTex wholesale garment catalog via the official TopTex v3 partner API. Each TopTex style is imported as a WooCommerce **variable product** with **Color** and **Size** attributes, so your customers can pick exactly the variant they want.
 
 **Features**
 
-* One-click import of the full TopTex catalog.
+* Talks to the official TopTex API (`api.toptex.io`), not a third-party index.
+* Import **all or part** of the catalog: full catalog, selected references, or the first N products.
 * Each style becomes a variable product with Color and Size attributes.
-* The full color x size matrix is imported, including per-color SKUs, EANs, and prices.
-* Wholesale prices imported and a configurable markup applied automatically.
+* The full color x size matrix is imported, including per-color SKUs and EANs.
+* **Live dealer prices** and **stock** are pulled from the API and a configurable markup is applied.
 * Product images, descriptions, brands, and categories mirrored from TopTex.
+* Choose the import language (7 languages supported).
 * Automatic background sync on a schedule you choose (hourly to weekly, or manual).
 * Idempotent imports: re-running never duplicates products; existing products are updated in place.
 * Clean, translatable, WordPress.org-compliant code (GPL, unminified, Settings API).
 
 **How it works**
 
-The plugin reads the public TopTex product catalog and turns it into WooCommerce products. It stores a reference to each TopTex style so future syncs update products rather than duplicating them.
-
-> **Note on data source.** This plugin uses the public TopTex catalog, which exposes the complete style x color x size matrix with per-variant SKUs, EANs, and wholesale prices. Live stock levels are dealer-specific and require a TopTex dealer account (available in a future release).
+The plugin authenticates against the TopTex API (API key + OIDC token) and pulls the catalog, then stores a reference to each TopTex catalog reference so future syncs update products rather than duplicating them.
 
 == Installation ==
 
 1. Upload the `toptex-for-woocommerce` folder to the `/wp-content/plugins/` directory, or install through the Plugins screen.
 2. Activate the plugin through the 'Plugins' screen.
 3. Ensure WooCommerce is installed and active.
-4. Go to **WooCommerce → TopTex** to configure markup, price list, and sync schedule.
-5. Click **Run import now** to pull in the catalog.
+4. Go to **WooCommerce → TopTex** and enter your API key, username, and password.
+5. Configure scope, markup, language, and sync schedule.
+6. Click **Run import now** to pull in the catalog.
 
 == Frequently Asked Questions ==
 
-= Does this require a TopTex account? =
+= Do I need TopTex API credentials? =
 
-No account is needed for the basic catalog import. Live dealer stock and dealer-specific pricing may require a TopTex dealer account in a future release.
+Yes. A partner API key, username, and password are required. You can obtain them from the TopTex developer portal (`portal.toptex.io`).
+
+= Can I import only part of the catalog? =
+
+Yes. Choose "Selected references only" and list the catalog references you want, or "First N products" to import a limited batch for testing.
 
 = Will re-running the import duplicate my products? =
 
-No. Each product is matched by its TopTex style reference, so re-runs update existing products in place.
+No. Each product is matched by its TopTex catalog reference, so re-runs update existing products in place.
+
+= Does the plugin import stock levels? =
+
+Yes. Live stock (per warehouse) is pulled from the API and applied to each variation.
 
 = Can I control the selling price? =
 
@@ -55,9 +64,16 @@ Yes. The wholesale price is imported and a configurable percentage markup is app
 
 == Changelog ==
 
+= 1.1.0 =
+* Replaced the Algolia index scraper with the official TopTex v3 partner API.
+* Added API key / username / password authentication with automatic OIDC token refresh.
+* Added import scope (full catalog, selected references, or first N products).
+* Added live dealer pricing and stock import.
+* Added language and usage-right configuration.
+
 = 1.0.0 =
 * Initial release.
 
 == Privacy ==
 
-This plugin makes remote network requests to the TopTex catalog service (`toptex.fr` and its content delivery network `cdn.toptex.com`) in order to fetch product data and images. No customer or visitor data is transmitted to third parties.
+This plugin makes remote network requests to the TopTex API (`api.toptex.io`) and its content delivery network (`cdn.toptex.com`) in order to fetch product data, prices, stock, and images. No customer or visitor data is transmitted to third parties. Your TopTex API credentials are stored in the WordPress options table.

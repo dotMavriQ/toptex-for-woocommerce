@@ -1,13 +1,14 @@
 <?php
 /**
- * Catalog importer: Algolia records -> WooCommerce variable products.
+ * Catalog importer: TopTex API styles -> WooCommerce variable products.
  *
- * The importer works in two phases driven by the Algolia client:
+ * The TopTex API returns each Style (catalog reference) as a record with a
+ * nested `colors[] -> sizes[]` matrix. We turn that into one WooCommerce
+ * variable product with Color + Size attributes and one variation per
+ * color x size combination.
  *
- *   1. List every style reference.
- *   2. For each style, fetch its color variants (full color x size matrix)
- *      and build one WooCommerce variable product with Color + Size
- *      attributes and one variation per color x size combination.
+ * Pricing and stock come from the dealer-specific `/v3/products/price` and
+ * `/v3/products/inventory` endpoints, keyed by SKU.
  *
  * @package TopTex_WooCommerce
  */
@@ -22,7 +23,7 @@ defined( 'ABSPATH' ) || exit;
 class Importer {
 
 	/**
-	 * Product meta key mapping a TopTex reference back to a WooCommerce product.
+	 * Product meta key mapping a TopTex catalog reference back to a product.
 	 */
 	const REFERENCE_META_KEY = '_toptex_reference';
 
@@ -87,19 +88,32 @@ class Importer {
 			'errors'   => 0,
 		);
 
+		// Structured diagnostic info collected for the report block.
+		$diagnostic = array(
+			'fatal'     => null,
+			'failures'  => array(),
+			'processed' => 0,
+		);
+
 		$color_attr = $this->ensure_attribute( __( 'Color', 'toptex-woocommerce' ), 'color' );
 		$size_attr  = $this->ensure_attribute( __( 'Size', 'toptex-woocommerce' ), 'size' );
 
-		foreach ( $client->list_styles() as $reference ) {
-			$variants = $client->get_color_variants( $reference );
+		foreach ( $this->enumerate_products( $client, $settings ) as $record ) {
+			++$diagnostic['processed'];
 
-			if ( empty( $variants ) ) {
+			$reference = isset( $record['catalogReference'] ) ? (string) $record['catalogReference'] : '';
+
+			if ( '' === $reference ) {
 				++$stats['errors'];
-				$this->log( 'error', sprintf( 'No color variants for reference %s.', $reference ) );
+				$this->log( 'error', __( 'Skipped a product with no catalog reference.', 'toptex-woocommerce' ) );
 				continue;
 			}
 
-			$result = $this->import_style( $reference, $variants, $settings, $color_attr, $size_attr );
+			// Fetch dealer-specific prices and stock for this style.
+			$prices    = $client->get_prices( $reference );
+			$inventory = $client->get_inventory( $reference );
+
+			$result = $this->import_style( $record, $settings, $color_attr, $size_attr, $prices, $inventory );
 
 			if ( true === $result ) {
 				++$stats['imported'];
@@ -107,7 +121,15 @@ class Importer {
 				++$stats['updated'];
 			} else {
 				++$stats['errors'];
-				$this->log( 'error', isset( $result['message'] ) ? $result['message'] : __( 'Unknown import error.', 'toptex-woocommerce' ) );
+				$message = isset( $result['message'] ) ? $result['message'] : __( 'Unknown import error.', 'toptex-woocommerce' );
+				$this->log( 'error', $message );
+
+				if ( count( $diagnostic['failures'] ) < 20 ) {
+					$diagnostic['failures'][] = array(
+						'reference' => $reference,
+						'message'   => $message,
+					);
+				}
 			}
 
 			// Give the process headroom during very large imports.
@@ -116,11 +138,26 @@ class Importer {
 			}
 		}
 
+		// No products processed almost always means an auth/connection failure.
+		if ( 0 === $diagnostic['processed'] ) {
+			$last_error = $client->get_last_error();
+			if ( $last_error ) {
+				$diagnostic['fatal'] = $last_error;
+			} else {
+				$diagnostic['fatal'] = array(
+					'code'      => 'toptex_empty_catalog',
+					'message'   => __( 'The import retrieved no products. Check your API credentials and usage-right setting.', 'toptex-woocommerce' ),
+					'http_code' => 0,
+				);
+			}
+		}
+
 		update_option(
 			'toptex_last_sync',
 			array(
-				'time'   => time(),
-				'result' => $stats,
+				'time'       => time(),
+				'result'     => $stats,
+				'diagnostic' => $diagnostic,
 			)
 		);
 
@@ -130,24 +167,97 @@ class Importer {
 	}
 
 	/**
-	 * Imports a single style (and all its color variants) as a variable product.
+	 * Enumerates the product records to import, honoring the selected scope.
 	 *
-	 * @param string $reference  Style reference.
-	 * @param array  $variants   Color-variant records.
-	 * @param array  $settings   Plugin options.
-	 * @param int    $color_attr Color attribute id.
-	 * @param int    $size_attr  Size attribute id.
+	 * @param Client $client   API client.
+	 * @param array  $settings Plugin options.
+	 * @return \Generator<int, array> Yields product records.
+	 */
+	private function enumerate_products( $client, $settings ) {
+		$scope       = isset( $settings['import_scope'] ) ? $settings['import_scope'] : 'all';
+		$usage_right = isset( $settings['usage_right'] ) ? $settings['usage_right'] : 'b2b_b2c';
+		$page_size   = isset( $settings['per_page'] ) ? max( 1, min( 200, (int) $settings['per_page'] ) ) : 200;
+
+		if ( 'selection' === $scope ) {
+			$refs = array_filter( array_map( 'trim', explode( ',', (string) $settings['import_references'] ) ) );
+			foreach ( $refs as $ref ) {
+				$record = $this->find_product_by_reference( $client, $ref, $usage_right );
+				if ( $record ) {
+					yield $record;
+				} else {
+					++$this->selection_misses;
+					$this->log( 'error', sprintf( 'Reference %s not found in the catalog.', $ref ) );
+				}
+			}
+			return;
+		}
+
+		$count = 0;
+
+		foreach ( $client->list_products( $usage_right, $page_size ) as $record ) {
+			if ( 'per_page' === $scope && $count >= $page_size ) {
+				break;
+			}
+
+			yield $record;
+			++$count;
+		}
+	}
+
+	/**
+	 * Scratch counter for missing selected references.
+	 *
+	 * @var int
+	 */
+	private $selection_misses = 0;
+
+	/**
+	 * Finds a single product record by catalog reference (or SKU).
+	 *
+	 * @param Client $client       API client.
+	 * @param string $reference    Catalog reference or SKU.
+	 * @param string $usage_right  Usage-right flag.
+	 * @return array|null Product record or null.
+	 */
+	private function find_product_by_reference( $client, $reference, $usage_right ) {
+		$key = strpos( $reference, '_' ) !== false ? 'sku' : 'catalog_reference';
+
+		$data = $client->get(
+			'/v3/products',
+			array(
+				$key          => $reference,
+				'usage_right' => $usage_right,
+			)
+		);
+
+		if ( is_wp_error( $data ) || ! is_array( $data ) ) {
+			return null;
+		}
+
+		// The search endpoint returns either a single object or a list.
+		return isset( $data['catalogReference'] ) ? $data : null;
+	}
+
+	/**
+	 * Imports a single style (and all its colors/sizes) as a variable product.
+	 *
+	 * @param array $record    TopTex product record.
+	 * @param array $settings  Plugin options.
+	 * @param int   $color_attr Color attribute id.
+	 * @param int   $size_attr  Size attribute id.
+	 * @param array $prices     Dealer price items (by SKU).
+	 * @param array $inventory  Dealer inventory items (by SKU).
 	 * @return true|string|array True (imported), 'updated', or error array.
 	 */
-	private function import_style( $reference, $variants, $settings, $color_attr, $size_attr ) {
-		$first = $variants[0];
+	private function import_style( $record, $settings, $color_attr, $size_attr, $prices, $inventory ) {
+		$lang      = isset( $settings['language'] ) ? $settings['language'] : 'en';
+		$reference = isset( $record['catalogReference'] ) ? (string) $record['catalogReference'] : '';
 
-		$name        = isset( $first['designation_marketing'] ) ? trim( (string) $first['designation_marketing'] ) : $reference;
-		$description = isset( $first['description_marketing'] ) ? (string) $first['description_marketing'] : '';
-		$brand       = isset( $first['marque'] ) ? (string) $first['marque'] : '';
+		$name        = $this->localized( $record, 'designation', $lang, $reference );
+		$description = $this->localized( $record, 'description', $lang, '' );
+		$brand       = isset( $record['brand'] ) ? trim( (string) $record['brand'] ) : '';
 
-		$status = ( 'yes' === $settings['auto_publish'] ) ? 'publish' : 'draft';
-
+		$status     = ( 'yes' === $settings['auto_publish'] ) ? 'publish' : 'draft';
 		$product_id = $this->find_by_reference( $reference );
 
 		if ( ! $product_id ) {
@@ -157,7 +267,7 @@ class Importer {
 					'post_status'  => $status,
 					'post_title'   => $name,
 					'post_content' => $description,
-					'post_excerpt' => $this->build_short_description( $first ),
+					'post_excerpt' => $this->build_short_description( $record, $lang ),
 				)
 			);
 
@@ -181,7 +291,7 @@ class Importer {
 			$result = 'updated';
 		}
 
-		$categories = $this->resolve_category_ids( $first, $settings );
+		$categories = $this->resolve_category_ids( $record, $settings, $lang );
 		if ( ! empty( $categories ) ) {
 			wp_set_object_terms( $product_id, $categories, 'product_cat', false );
 		}
@@ -191,8 +301,8 @@ class Importer {
 		}
 
 		// Collect the union of colors and sizes across all variants.
-		$colors = $this->collect_colors( $variants );
-		$sizes  = $this->collect_sizes( $variants );
+		$colors = $this->collect_colors( $record );
+		$sizes  = $this->collect_sizes( $record );
 
 		$this->set_attribute_on_product( $product_id, $color_attr, $colors );
 		$this->set_attribute_on_product( $product_id, $size_attr, $sizes );
@@ -201,7 +311,7 @@ class Importer {
 		$this->write_attribute_metadata( $product_id, $color_attr, $size_attr, $colors, $sizes );
 
 		// Import the full color x size variation matrix.
-		$this->import_variations( $product_id, $reference, $variants, $settings, $color_attr, $size_attr );
+		$this->import_variations( $product_id, $record, $settings, $color_attr, $size_attr, $prices, $inventory );
 
 		// Derive the product-level base price from the cheapest variant.
 		$base_price = $this->min_variant_price( $product_id );
@@ -211,7 +321,7 @@ class Importer {
 		}
 
 		if ( 'yes' === $settings['import_images'] ) {
-			$this->import_images( $product_id, $first );
+			$this->import_images( $product_id, $record );
 		}
 
 		$product = wc_get_product( $product_id );
@@ -222,6 +332,41 @@ class Importer {
 		}
 
 		return $result;
+	}
+
+	/**
+	 * Extracts a localized string from a multilingual field or scalar.
+	 *
+	 * @param array  $record  Product record.
+	 * @param string $key     Field key.
+	 * @param string $lang    Language code (de/en/es/fr/it/nl/pt).
+	 * @param string $fallback Fallback value.
+	 * @return string
+	 */
+	private function localized( $record, $key, $lang, $fallback = '' ) {
+		if ( ! isset( $record[ $key ] ) ) {
+			return $fallback;
+		}
+
+		$value = $record[ $key ];
+
+		if ( is_array( $value ) ) {
+			if ( isset( $value[ $lang ] ) && '' !== trim( (string) $value[ $lang ] ) ) {
+				return (string) $value[ $lang ];
+			}
+			// Fall back to English then any non-empty value.
+			if ( isset( $value['en'] ) && '' !== trim( (string) $value['en'] ) ) {
+				return (string) $value['en'];
+			}
+			foreach ( $value as $v ) {
+				if ( is_scalar( $v ) && '' !== trim( (string) $v ) ) {
+					return (string) $v;
+				}
+			}
+			return $fallback;
+		}
+
+		return '' !== trim( (string) $value ) ? (string) $value : $fallback;
 	}
 
 	/**
@@ -254,9 +399,9 @@ class Importer {
 	}
 
 	/**
-	 * Finds the product id for a TopTex reference.
+	 * Finds the product id for a TopTex catalog reference.
 	 *
-	 * @param string $reference Style reference.
+	 * @param string $reference Catalog reference.
 	 * @return int Product id or 0.
 	 */
 	private function find_by_reference( $reference ) {
@@ -276,17 +421,23 @@ class Importer {
 	}
 
 	/**
-	 * Collects the union of color names across variants.
+	 * Collects the union of color names across the record's color variants.
 	 *
-	 * @param array $variants Color-variant records.
+	 * @param array $record Product record.
 	 * @return string[] Color names.
 	 */
-	private function collect_colors( $variants ) {
+	private function collect_colors( $record ) {
 		$colors = array();
 
+		$variants = isset( $record['colors'] ) ? (array) $record['colors'] : array();
+
 		foreach ( $variants as $variant ) {
-			if ( isset( $variant['couleur']['color_name'] ) && '' !== trim( (string) $variant['couleur']['color_name'] ) ) {
-				$colors[] = (string) $variant['couleur']['color_name'];
+			if ( isset( $variant['colors'] ) && is_array( $variant['colors'] ) ) {
+				// colors is a {lang: name} map; prefer 'en'.
+				$name = isset( $variant['colors']['en'] ) ? $variant['colors']['en'] : reset( $variant['colors'] );
+				if ( is_scalar( $name ) && '' !== trim( (string) $name ) ) {
+					$colors[] = (string) $name;
+				}
 			}
 		}
 
@@ -294,23 +445,21 @@ class Importer {
 	}
 
 	/**
-	 * Collects the union of size labels across variants.
+	 * Collects the union of size labels across the record's variants.
 	 *
-	 * @param array $variants Color-variant records.
+	 * @param array $record Product record.
 	 * @return string[] Size labels.
 	 */
-	private function collect_sizes( $variants ) {
-		$sizes  = array();
-		$fields = array( 'taille_france', 'taille', 'taille_allemagne', 'taille_espagne', 'taille_italie', 'taille_royaumeuni' );
+	private function collect_sizes( $record ) {
+		$sizes = array();
+
+		$variants = isset( $record['colors'] ) ? (array) $record['colors'] : array();
 
 		foreach ( $variants as $variant ) {
-			$avail = isset( $variant['produit_available_sizes'] ) ? (array) $variant['produit_available_sizes'] : array();
-			foreach ( $avail as $size ) {
-				foreach ( $fields as $field ) {
-					if ( isset( $size[ $field ] ) && '' !== trim( (string) $size[ $field ] ) ) {
-						$sizes[] = (string) $size[ $field ];
-						break;
-					}
+			$size_list = isset( $variant['sizes'] ) ? (array) $variant['sizes'] : array();
+			foreach ( $size_list as $size ) {
+				if ( isset( $size['size'] ) && '' !== trim( (string) $size['size'] ) ) {
+					$sizes[] = (string) $size['size'];
 				}
 			}
 		}
@@ -344,28 +493,75 @@ class Importer {
 	}
 
 	/**
+	 * Builds SKU -> data lookups from price and inventory lists.
+	 *
+	 * @param array $prices    Price items.
+	 * @param array $inventory Inventory items.
+	 * @return array Two arrays: [price_by_sku, stock_by_sku].
+	 */
+	private function index_sku_data( $prices, $inventory ) {
+		$price_by_sku = array();
+		$stock_by_sku = array();
+
+		foreach ( $prices as $item ) {
+			if ( isset( $item['sku'] ) && isset( $item['prices'] ) && is_array( $item['prices'] ) ) {
+				// Use the lowest quantity tier's price (quantity 1).
+				$best = null;
+				foreach ( $item['prices'] as $tier ) {
+					if ( isset( $tier['price'] ) ) {
+						$p = (float) $tier['price'];
+						if ( null === $best || $p < $best ) {
+							$best = $p;
+						}
+					}
+				}
+				if ( null !== $best ) {
+					$price_by_sku[ (string) $item['sku'] ] = $best;
+				}
+			}
+		}
+
+		foreach ( $inventory as $item ) {
+			if ( isset( $item['sku'] ) && isset( $item['warehouses'] ) && is_array( $item['warehouses'] ) ) {
+				$total = 0;
+				foreach ( $item['warehouses'] as $wh ) {
+					$total += isset( $wh['stock'] ) ? (int) $wh['stock'] : 0;
+				}
+				$stock_by_sku[ (string) $item['sku'] ] = $total;
+			}
+		}
+
+		return array( $price_by_sku, $stock_by_sku );
+	}
+
+	/**
 	 * Imports the color x size variation matrix.
 	 *
-	 * @param int    $product_id Parent product id.
-	 * @param string $reference  Style reference.
-	 * @param array  $variants   Color-variant records.
-	 * @param array  $settings   Options.
-	 * @param int    $color_attr Color attribute id.
-	 * @param int    $size_attr  Size attribute id.
+	 * @param int   $product_id Parent product id.
+	 * @param array $record     Product record.
+	 * @param array $settings   Options.
+	 * @param int   $color_attr Color attribute id.
+	 * @param int   $size_attr  Size attribute id.
+	 * @param array $prices     Dealer price items.
+	 * @param array $inventory  Dealer inventory items.
 	 * @return void
 	 */
-	private function import_variations( $product_id, $reference, $variants, $settings, $color_attr, $size_attr ) {
+	private function import_variations( $product_id, $record, $settings, $color_attr, $size_attr, $prices, $inventory ) {
 		$color_tax = wc_attribute_taxonomy_name_by_id( $color_attr );
 		$size_tax  = wc_attribute_taxonomy_name_by_id( $size_attr );
 
 		$color_key = 'pa_' . str_replace( 'pa_', '', $color_tax );
 		$size_key  = 'pa_' . str_replace( 'pa_', '', $size_tax );
 
-		$price_field = ( 'it' === $settings['price_country'] ) ? 'prix_unitaire_vrac_catalogue_italie' : 'prix_unitaire_vrac_catalogue';
-		$markup      = isset( $settings['markup_percent'] ) ? (float) $settings['markup_percent'] : 0;
+		$markup = isset( $settings['markup_percent'] ) ? (float) $settings['markup_percent'] : 0;
+
+		list( $price_by_sku, $stock_by_sku ) = $this->index_sku_data( $prices, $inventory );
+
+		$reference = isset( $record['catalogReference'] ) ? (string) $record['catalogReference'] : '';
+		$variants  = isset( $record['colors'] ) ? (array) $record['colors'] : array();
 
 		foreach ( $variants as $variant ) {
-			$color_name = isset( $variant['couleur']['color_name'] ) ? (string) $variant['couleur']['color_name'] : '';
+			$color_name = $this->color_name( $variant );
 
 			if ( '' === $color_name ) {
 				continue;
@@ -375,12 +571,11 @@ class Importer {
 			if ( ! $color_term ) {
 				continue;
 			}
-			$color_term_id = (int) $color_term->term_id;
 
-			$sizes = isset( $variant['produit_available_sizes'] ) ? (array) $variant['produit_available_sizes'] : array();
+			$size_list = isset( $variant['sizes'] ) ? (array) $variant['sizes'] : array();
 
-			foreach ( $sizes as $size ) {
-				$size_name = $this->primary_size( $size );
+			foreach ( $size_list as $size ) {
+				$size_name = isset( $size['size'] ) ? (string) $size['size'] : '';
 
 				if ( '' === $size_name ) {
 					continue;
@@ -390,11 +585,16 @@ class Importer {
 				if ( ! $size_term ) {
 					continue;
 				}
-				$size_term_id = (int) $size_term->term_id;
 
-				$sku             = isset( $size['sku'] ) ? (string) $size['sku'] : '';
-				$ean             = isset( $size['ean'] ) ? (string) $size['ean'] : '';
-				$wholesale       = isset( $size[ $price_field ] ) ? (float) $size[ $price_field ] : 0;
+				$sku       = isset( $size['sku'] ) ? (string) $size['sku'] : '';
+				$ean       = isset( $size['ean'] ) ? (string) $size['ean'] : '';
+				$wholesale = isset( $price_by_sku[ $sku ] ) ? (float) $price_by_sku[ $sku ] : 0.0;
+				$stock_qty = isset( $stock_by_sku[ $sku ] ) ? (int) $stock_by_sku[ $sku ] : 0;
+
+				if ( $wholesale <= 0 && isset( $size['publicUnitPrice'] ) ) {
+					$wholesale = $this->parse_price( $size['publicUnitPrice'] );
+				}
+
 				$variation_price = $wholesale > 0 ? round( $wholesale * ( 1 + $markup / 100 ), 2 ) : 0;
 
 				$variation_id = $this->find_variation( $product_id, $color_key, $size_key, $this->term_slug( $color_name ), $this->term_slug( $size_name ) );
@@ -424,11 +624,55 @@ class Importer {
 					update_post_meta( $variation_id, '_gtin', $ean );
 				}
 
-				// The public catalog does not carry stock; mark in stock for now.
-				update_post_meta( $variation_id, '_manage_stock', 'no' );
-				update_post_meta( $variation_id, '_stock_status', 'instock' );
+				// Stock: manage by quantity when we have live inventory data.
+				if ( $wholesale > 0 || ! empty( $stock_by_sku ) ) {
+					update_post_meta( $variation_id, '_manage_stock', 'yes' );
+					update_post_meta( $variation_id, '_stock', (string) $stock_qty );
+				} else {
+					update_post_meta( $variation_id, '_manage_stock', 'no' );
+				}
+				update_post_meta( $variation_id, '_stock_status', $stock_qty > 0 ? 'instock' : 'outofstock' );
 			}
 		}
+	}
+
+	/**
+	 * Extracts a color name from a color variant.
+	 *
+	 * @param array $variant Color variant.
+	 * @return string Color name.
+	 */
+	private function color_name( $variant ) {
+		if ( isset( $variant['colors'] ) && is_array( $variant['colors'] ) ) {
+			$name = isset( $variant['colors']['en'] ) ? $variant['colors']['en'] : reset( $variant['colors'] );
+			if ( is_scalar( $name ) ) {
+				return (string) $name;
+			}
+		}
+
+		return '';
+	}
+
+	/**
+	 * Parses a European-formatted price string ("5,72 €") to float.
+	 *
+	 * @param string $price Price string.
+	 * @return float
+	 */
+	private function parse_price( $price ) {
+		$clean = (string) $price;
+		$clean = preg_replace( '/[^0-9,\.\-]/', '', $clean );
+
+		// Handle "5,72" (comma decimal) vs "5.72".
+		if ( strpos( $clean, ',' ) !== false && strpos( $clean, '.' ) === false ) {
+			$clean = str_replace( ',', '.', $clean );
+		} elseif ( strpos( $clean, ',' ) !== false && strpos( $clean, '.' ) !== false ) {
+			// "1.234,56" -> thousands sep "." and decimal ",".
+			$clean = str_replace( '.', '', $clean );
+			$clean = str_replace( ',', '.', $clean );
+		}
+
+		return (float) $clean;
 	}
 
 	/**
@@ -468,7 +712,7 @@ class Importer {
 	/**
 	 * Builds a sanitized SKU with an optional suffix.
 	 *
-	 * @param string $reference Style reference.
+	 * @param string $reference Catalog reference.
 	 * @param string $base_sku  Base sku (variation-level).
 	 * @param array  $settings  Options.
 	 * @return string
@@ -484,24 +728,6 @@ class Importer {
 	}
 
 	/**
-	 * Returns the primary size label for a size record.
-	 *
-	 * @param array $size Size record.
-	 * @return string
-	 */
-	private function primary_size( $size ) {
-		$order = array( 'taille_france', 'taille', 'taille_allemagne', 'taille_espagne', 'taille_italie', 'taille_royaumeuni' );
-
-		foreach ( $order as $field ) {
-			if ( isset( $size[ $field ] ) && '' !== trim( (string) $size[ $field ] ) ) {
-				return (string) $size[ $field ];
-			}
-		}
-
-		return '';
-	}
-
-	/**
 	 * Slugifies a term name.
 	 *
 	 * @param string $name Name.
@@ -514,18 +740,19 @@ class Importer {
 	/**
 	 * Resolves product category ids for a record.
 	 *
-	 * @param array $record   Algolia record.
-	 * @param array $settings Options.
+	 * @param array  $record   Product record.
+	 * @param array  $settings Options.
+	 * @param string $lang     Language code.
 	 * @return int[] Category term ids.
 	 */
-	private function resolve_category_ids( $record, $settings ) {
+	private function resolve_category_ids( $record, $settings, $lang ) {
 		if ( ! empty( $settings['catalog_category_id'] ) ) {
 			return array( (int) $settings['catalog_category_id'] );
 		}
 
 		$ids    = array();
-		$family = isset( $record['famille'] ) ? trim( (string) $record['famille'] ) : '';
-		$sub    = isset( $record['sous_famille'] ) ? trim( (string) $record['sous_famille'] ) : '';
+		$family = $this->localized( $record, 'family', $lang, '' );
+		$sub    = $this->localized( $record, 'sub_family', $lang, '' );
 
 		$parent_id = 0;
 
@@ -556,15 +783,17 @@ class Importer {
 	/**
 	 * Builds a short description from marketing arguments.
 	 *
-	 * @param array $record Algolia record.
+	 * @param array  $record Product record.
+	 * @param string $lang   Language code.
 	 * @return string
 	 */
-	private function build_short_description( $record ) {
+	private function build_short_description( $record, $lang ) {
 		$parts = array();
 
-		foreach ( array( 'arguments_vente', 'arguments_vente_2', 'arguments_vente_3' ) as $key ) {
-			if ( isset( $record[ $key ] ) && '' !== trim( (string) $record[ $key ] ) ) {
-				$parts[] = trim( (string) $record[ $key ] );
+		foreach ( array( 'salesArguments', 'salesArguments2', 'salesArguments3' ) as $key ) {
+			$value = $this->localized( $record, $key, $lang, '' );
+			if ( '' !== $value ) {
+				$parts[] = $value;
 			}
 		}
 
@@ -649,34 +878,37 @@ class Importer {
 	 * Downloads and attaches product images.
 	 *
 	 * @param int   $product_id Product id.
-	 * @param array $record     Algolia record (first color variant).
+	 * @param array $record     Product record.
 	 * @return void
 	 */
 	private function import_images( $product_id, $record ) {
-		$cdns = array(
-			'https://cdn.toptex.com/pictures/',
-			'https://cdn.toptex.com/packshots/',
-		);
+		$urls = array();
 
-		$files = array();
-
-		foreach ( array( 'images', 'packshots' ) as $group ) {
-			if ( isset( $record[ $group ] ) && is_array( $record[ $group ] ) ) {
-				foreach ( $record[ $group ] as $img ) {
-					if ( isset( $img['picture_url'] ) ) {
-						$files[] = ltrim( (string) $img['picture_url'], '/' );
+		// Top-level images.
+		if ( isset( $record['images'] ) && is_array( $record['images'] ) ) {
+			foreach ( $record['images'] as $img ) {
+				foreach ( array( 'url_image', 'url_packshot', 'url' ) as $k ) {
+					if ( isset( $img[ $k ] ) && '' !== trim( (string) $img[ $k ] ) ) {
+						$urls[] = (string) $img[ $k ];
+						break;
 					}
 				}
 			}
 		}
 
-		// Build unique candidate URLs across both CDN roots.
-		$urls = array();
-		foreach ( $files as $file ) {
-			foreach ( $cdns as $cdn ) {
-				$urls[] = $cdn . $file;
+		// Per-color packshots (FACE/BACK).
+		if ( isset( $record['colors'] ) && is_array( $record['colors'] ) ) {
+			foreach ( $record['colors'] as $variant ) {
+				if ( isset( $variant['packshots'] ) && is_array( $variant['packshots'] ) ) {
+					foreach ( $variant['packshots'] as $shot ) {
+						if ( isset( $shot['url_packshot'] ) && '' !== trim( (string) $shot['url_packshot'] ) ) {
+							$urls[] = (string) $shot['url_packshot'];
+						}
+					}
+				}
 			}
 		}
+
 		$urls = array_values( array_unique( $urls ) );
 
 		if ( empty( $urls ) ) {

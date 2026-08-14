@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       TopTex for WooCommerce
  * Plugin URI:        https://github.com/dotMavriQ/toptex-for-woocommerce
- * Description:       Import the TopTex garment wholesale catalog into WooCommerce as variable products with full color and size variations.
- * Version:           1.0.0
+ * Description:       Import the TopTex garment wholesale catalog into WooCommerce as variable products with full color, size, price and stock variations.
+ * Version:           1.1.0
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Requires Plugins:  woocommerce
@@ -26,12 +26,17 @@ defined( 'ABSPATH' ) || exit;
  *
  * Bump alongside the plugin header when releasing.
  */
-const TOP_TEX_VERSION = '1.0.0';
+const TOP_TEX_VERSION = '1.1.0';
 
 /**
  * Absolute path to the plugin directory (with trailing slash).
  */
 define( 'TOP_TEX_PLUGIN_DIR', __DIR__ . '/' );
+
+/**
+ * Public URL to the plugin directory (with trailing slash).
+ */
+define( 'TOP_TEX_PLUGIN_DIR_URL', plugin_dir_url( __FILE__ ) );
 
 /**
  * Loads the plugin once all plugins are ready.
