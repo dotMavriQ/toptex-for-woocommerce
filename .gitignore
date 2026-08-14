@@ -1,0 +1,17 @@
+# Dependencies
+/vendor/
+composer.lock
+
+# Tooling (PHPCS caches, etc.)
+.phpcs-cache
+.phpcs.xml.cache
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# WordPress build artifacts (package the source, not generated archives)
+*.zip
+*.tar.gz
