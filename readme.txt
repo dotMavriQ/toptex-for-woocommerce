@@ -71,7 +71,7 @@ Yes. The wholesale price is imported and a configurable percentage markup is app
 == Changelog ==
 
 = 1.1.0 =
-* Replaced the Algolia index scraper with the official TopTex v3 partner API.
+* Replaced the public-index integration with the official TopTex v3 partner API.
 * Added API key / username / password authentication with automatic OIDC token refresh.
 * Added import scope (full catalog, selected references, or first N products).
 * Added live dealer pricing and stock import.

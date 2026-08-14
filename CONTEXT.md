@@ -42,4 +42,4 @@ _Avoid_: License, tier.
 ## Flagged ambiguities
 
 - "product" was used to mean both the TopTex Style and the WooCommerce parent product. Resolved: use **Style** for the TopTex concept, **Product** for the WooCommerce parent product.
-- The Algolia index historically used `reference_catalogue` where the v3 API uses `catalogReference`. Resolved: `catalogReference` is canonical; `reference_catalogue`/`supplierReference` are aliases.
+- The previous public-index integration used `reference_catalogue` where the v3 API uses `catalogReference`. Resolved: `catalogReference` is canonical; `reference_catalogue`/`supplierReference` are aliases.

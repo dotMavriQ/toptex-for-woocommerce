@@ -12,7 +12,6 @@ global $wpdb;
 $option_names = array(
 	'toptex_options',
 	'toptex_last_sync',
-	'toptex_algolia_host_index',
 );
 
 foreach ( $option_names as $option_name ) {
