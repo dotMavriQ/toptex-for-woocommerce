@@ -28,11 +28,14 @@ EAN/GTIN codes, live dealer prices and stock.
   `catalogReference`s, or just the first N products (handy for testing).
 - Full color × size variation matrix with distinct SKUs, EANs, and prices.
 - **Live dealer pricing** (tiered quantity) and **stock** imported alongside.
+- **Deleted/discontinued sizes** reconciled automatically (marked out of stock).
 - Configurable markup, language (7 languages), and usage-right.
 - Product images, descriptions, brands, and categories mirrored automatically.
 - Scheduled background sync (hourly to weekly, or manual only).
 - Idempotent imports: re-running updates products in place, never duplicates.
 - Audit log of every sync run.
+- A copyable, secret-free **diagnostic report** and a **test connection** button
+  to surface API/auth problems from the WordPress backend.
 
 ## Requirements
 
@@ -69,6 +72,10 @@ All settings live under **WooCommerce → TopTex**:
 | Product status      | Publish immediately or import as drafts.                     |
 | Automatic sync      | Schedule (hourly/twice-daily/daily/weekly/manual).           |
 | SKU suffix          | Optional suffix appended to every imported SKU.              |
+
+The settings page also has a **Test connection** button and a **Diagnostic
+report** block (under *Synchronization*) so you can verify credentials and copy
+a secret-free report when something goes wrong.
 
 ## Data source
 

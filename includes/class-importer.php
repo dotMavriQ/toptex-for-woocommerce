@@ -33,6 +33,13 @@ class Importer {
 	const LOG_TABLE = 'toptex_sync_log';
 
 	/**
+	 * Count of selected references that were not found (for diagnostics).
+	 *
+	 * @var int
+	 */
+	private $selection_misses = 0;
+
+	/**
 	 * Boots the importer (singleton).
 	 *
 	 * @return Importer
@@ -89,7 +96,8 @@ class Importer {
 		);
 
 		// Structured diagnostic info collected for the report block.
-		$diagnostic = array(
+		$this->selection_misses = 0;
+		$diagnostic             = array(
 			'fatal'     => null,
 			'failures'  => array(),
 			'processed' => 0,
@@ -152,6 +160,17 @@ class Importer {
 			}
 		}
 
+		// Reconcile upstream deletions (removed size SKUs -> out of stock).
+		// Skip when importing a partial selection, since deletions are a
+		// catalog-wide feed and would wrongly deactivate untouched variants.
+		if ( 'all' === $settings['import_scope'] ) {
+			$deleted_count           = $this->apply_deletions( $client, $settings );
+			$stats['deactivated']    = $deleted_count;
+			$diagnostic['deletions'] = $deleted_count;
+		}
+
+		$diagnostic['selection_misses'] = $this->selection_misses;
+
 		update_option(
 			'toptex_last_sync',
 			array(
@@ -161,7 +180,7 @@ class Importer {
 			)
 		);
 
-		$this->log( 'info', sprintf( 'Sync complete. Imported %d, updated %d, errors %d.', $stats['imported'], $stats['updated'], $stats['errors'] ) );
+		$this->log( 'info', sprintf( 'Sync complete. Imported %d, updated %d, errors %d, deactivated %d.', $stats['imported'], $stats['updated'], $stats['errors'], isset( $stats['deactivated'] ) ? $stats['deactivated'] : 0 ) );
 
 		return $stats;
 	}
@@ -203,13 +222,6 @@ class Importer {
 			++$count;
 		}
 	}
-
-	/**
-	 * Scratch counter for missing selected references.
-	 *
-	 * @var int
-	 */
-	private $selection_misses = 0;
 
 	/**
 	 * Finds a single product record by catalog reference (or SKU).
@@ -418,6 +430,72 @@ class Importer {
 		);
 
 		return empty( $posts ) ? 0 : (int) $posts[0];
+	}
+
+	/**
+	 * Finds a product variation by its SKU meta value.
+	 *
+	 * @param string $sku Sanitized SKU (as stored via make_sku()).
+	 * @return int Variation id or 0.
+	 */
+	private function find_variation_by_sku( $sku ) {
+		$posts = get_posts(
+			array(
+				'post_type'        => 'product_variation',
+				'post_status'      => 'any',
+				'posts_per_page'   => 1,
+				'fields'           => 'ids',
+				'meta_key'         => '_sku', // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+				'meta_value'       => $sku, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
+				'suppress_filters' => true,
+			)
+		);
+
+		return empty( $posts ) ? 0 : (int) $posts[0];
+	}
+
+	/**
+	 * Applies upstream deletions: marks removed size SKUs out of stock.
+	 *
+	 * The TopTex "deleted" feed lists size SKUs that have been removed from the
+	 * catalog. We fetch every deleted SKU and, for any matching WooCommerce
+	 * variation, mark it out of stock and flag it as deleted so it no longer
+	 * appears as a buyable option.
+	 *
+	 * @param Client $client   API client.
+	 * @param array  $settings Plugin options.
+	 * @return int Number of variations deactivated.
+	 */
+	private function apply_deletions( $client, $settings ) {
+		$count = 0;
+
+		foreach ( $client->list_deleted( $settings['usage_right'] ) as $deleted ) {
+			$sku = isset( $deleted['catalog_id'] ) ? (string) $deleted['catalog_id'] : '';
+
+			if ( '' === $sku ) {
+				continue;
+			}
+
+			// Transform exactly as imported (suffix + sanitize_title) to match.
+			$lookup_sku   = $this->make_sku( '', $sku, $settings );
+			$variation_id = $this->find_variation_by_sku( $lookup_sku );
+
+			if ( ! $variation_id ) {
+				continue;
+			}
+
+			update_post_meta( $variation_id, '_toptex_deleted', '1' );
+			update_post_meta( $variation_id, '_manage_stock', 'no' );
+			update_post_meta( $variation_id, '_stock_status', 'outofstock' );
+
+			++$count;
+
+			if ( 0 === $count % 250 ) {
+				set_time_limit( 30 );
+			}
+		}
+
+		return $count;
 	}
 
 	/**

@@ -662,8 +662,15 @@ class Settings {
 
 		if ( isset( $status['result'] ) ) {
 			$result = $status['result'];
-			/* translators: 1: imported count, 2: updated count, 3: error count. */
-			$summary = sprintf( \__( 'Imported: %1$d — Updated: %2$d — Errors: %3$d', 'toptex-woocommerce' ), (int) $result['imported'], (int) $result['updated'], (int) $result['errors'] );
+
+			if ( isset( $result['deactivated'] ) && (int) $result['deactivated'] > 0 ) {
+				/* translators: 1: imported, 2: updated, 3: errors, 4: deactivated. */
+				$summary = sprintf( \__( 'Imported: %1$d — Updated: %2$d — Errors: %3$d — Deactivated: %4$d', 'toptex-woocommerce' ), (int) $result['imported'], (int) $result['updated'], (int) $result['errors'], (int) $result['deactivated'] );
+			} else {
+				/* translators: 1: imported count, 2: updated count, 3: error count. */
+				$summary = sprintf( \__( 'Imported: %1$d — Updated: %2$d — Errors: %3$d', 'toptex-woocommerce' ), (int) $result['imported'], (int) $result['updated'], (int) $result['errors'] );
+			}
+
 			echo '<p>' . esc_html( $summary ) . '</p>';
 		}
 	}
@@ -749,11 +756,18 @@ class Settings {
 			$lines[] = '- Last import: ' . gmdate( 'Y-m-d H:i:s', (int) $status['time'] ) . ' UTC';
 			if ( ! empty( $status['result'] ) ) {
 				$r       = $status['result'];
-				$lines[] = '- Imported: ' . (int) $r['imported'] . ', Updated: ' . (int) $r['updated'] . ', Errors: ' . (int) $r['errors'];
+				$summary = 'Imported: ' . (int) $r['imported'] . ', Updated: ' . (int) $r['updated'] . ', Errors: ' . (int) $r['errors'];
+				if ( isset( $r['deactivated'] ) ) {
+					$summary .= ', Deactivated: ' . (int) $r['deactivated'];
+				}
+				$lines[] = '- ' . $summary;
 			}
 			if ( ! empty( $status['diagnostic']['fatal'] ) ) {
 				$f       = $status['diagnostic']['fatal'];
 				$lines[] = '- Last error: [' . $f['code'] . '] ' . $f['message'] . ( ! empty( $f['http_code'] ) ? ' (HTTP ' . $f['http_code'] . ')' : '' );
+			}
+			if ( ! empty( $status['diagnostic']['selection_misses'] ) ) {
+				$lines[] = '- Selected references not found: ' . (int) $status['diagnostic']['selection_misses'];
 			}
 			if ( ! empty( $status['diagnostic']['failures'] ) ) {
 				$lines[] = '- Product failures:';

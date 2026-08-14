@@ -21,10 +21,12 @@ TopTex for WooCommerce connects your WooCommerce store to the TopTex wholesale g
 * Each style becomes a variable product with Color and Size attributes.
 * The full color x size matrix is imported, including per-color SKUs and EANs.
 * **Live dealer prices** and **stock** are pulled from the API and a configurable markup is applied.
+* Deleted/discontinued sizes are reconciled automatically (marked out of stock).
 * Product images, descriptions, brands, and categories mirrored from TopTex.
 * Choose the import language (7 languages supported).
 * Automatic background sync on a schedule you choose (hourly to weekly, or manual).
 * Idempotent imports: re-running never duplicates products; existing products are updated in place.
+* A copyable, secret-free diagnostic report and a "test connection" button.
 * Clean, translatable, WordPress.org-compliant code (GPL, unminified, Settings API).
 
 **How it works**
@@ -58,6 +60,10 @@ No. Each product is matched by its TopTex catalog reference, so re-runs update e
 
 Yes. Live stock (per warehouse) is pulled from the API and applied to each variation.
 
+= What happens when TopTex discontinues a size? =
+
+On a full-catalog sync, deleted/discontinued size SKUs are marked out of stock automatically, so removed variants stop appearing as buyable options.
+
 = Can I control the selling price? =
 
 Yes. The wholesale price is imported and a configurable percentage markup is applied to form the selling price.
@@ -70,6 +76,8 @@ Yes. The wholesale price is imported and a configurable percentage markup is app
 * Added import scope (full catalog, selected references, or first N products).
 * Added live dealer pricing and stock import.
 * Added language and usage-right configuration.
+* Added reconciliation of deleted/discontinued size SKUs.
+* Added a copyable diagnostic report and a "test connection" button.
 
 = 1.0.0 =
 * Initial release.

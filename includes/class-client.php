@@ -396,22 +396,51 @@ class Client {
 	}
 
 	/**
-	 * Fetches the list of deleted size SKUs.
+	 * Lists every deleted catalog entry (size SKUs), paginated.
+	 *
+	 * Each entry is `{ catalog_type, catalog_id }` where `catalog_id` is the
+	 * raw SKU (e.g. "B34_51206_14238"). Entries with an empty `catalog_id`
+	 * are sentinel rows and are skipped.
 	 *
 	 * @param string $usage_right Usage-right flag.
-	 * @return array[] Deleted entries ({catalog_type, catalog_id}).
+	 * @return \Generator<int, array> Yields deleted entries.
 	 */
 	public function list_deleted( $usage_right = 'b2b_b2c' ) {
-		$data = $this->get(
-			'/v3/products/deleted',
-			array( 'usage_right' => $this->normalize_usage_right( $usage_right ) )
-		);
+		$usage_right = $this->normalize_usage_right( $usage_right );
+		$page_size   = 200;
+		$page        = 1;
 
-		if ( is_wp_error( $data ) ) {
-			return array();
-		}
+		do {
+			$data = $this->get(
+				'/v3/products/deleted',
+				array(
+					'usage_right' => $usage_right,
+					'page_number' => $page,
+					'page_size'   => $page_size,
+				)
+			);
 
-		return isset( $data['items'] ) ? (array) $data['items'] : array();
+			if ( is_wp_error( $data ) ) {
+				yield from array();
+				return;
+			}
+
+			$items = isset( $data['items'] ) ? (array) $data['items'] : array();
+			$total = isset( $data['total_count'] ) ? (int) $data['total_count'] : 0;
+
+			foreach ( $items as $item ) {
+				if ( empty( $item['catalog_id'] ) ) {
+					continue; // Sentinel row.
+				}
+				yield $item;
+			}
+
+			++$page;
+
+			if ( empty( $items ) || ( $total > 0 && $page > (int) ceil( $total / $page_size ) ) ) {
+				break;
+			}
+		} while ( true );
 	}
 
 	/**
