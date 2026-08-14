@@ -1,3 +1,5 @@
+<img src="assets/toptex-wapuu-320.png" alt="TopTex Wapuu" align="right" width="160">
+
 # TopTex for WooCommerce
 
 Import the TopTex wholesale garment catalog into WooCommerce as variable
